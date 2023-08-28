@@ -15,48 +15,45 @@ import java.util.regex.Pattern;
 
 import static java.lang.StringTemplate.STR;
 
-public class Parser {
+private static final Pattern REAL_ESTATE_PATTERN = Pattern.compile("(\\d\\d-\\d\\d\\d-\\d\\d-\\d\\d-\\d\\d-\\d-\\d\\d-\\d\\d\\d)</a>\\s*</td>\\s*<td.*>\\s*.*\\s*</td>\\s*<td.*\">(.*)<");
+private static final String MARKET_VALUE = "/td>.*\\s*\">(.*)<";
+private static final Pattern MARKET_VALUE_PATTERN = Pattern.compile(STR."Market Value Total\\s*<\{MARKET_VALUE.repeat(5)}");
 
-    private static final Pattern REAL_ESTATE_PATTERN = Pattern.compile("(\\d\\d-\\d\\d\\d-\\d\\d-\\d\\d-\\d\\d-\\d-\\d\\d-\\d\\d\\d)</a>\\s*</td>\\s*<td.*>\\s*.*\\s*</td>\\s*<td.*\">(.*)<");
-    private static final String MARKET_VALUE = "/td>.*\\s*\">(.*)<";
-    private static final Pattern MARKET_VALUE_PATTERN = Pattern.compile(STR."Market Value Total\\s*<\{MARKET_VALUE.repeat(5)}");
+void main(String[] args) throws IOException, InterruptedException {
+    String filename = args[0];
 
-    public static void main(String[] args) throws IOException, InterruptedException {
-        String filename = args[0];
+    String html = Files.readString(Path.of("./" + filename));
 
-        String html = Files.readString(Path.of("./" + filename));
+    List<String> rows = Collections.synchronizedList(new ArrayList<>());
+    try (HttpClient client = HttpClient.newHttpClient()) {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            var realEstateMatcher = REAL_ESTATE_PATTERN.matcher(html);
 
-        List<String> rows = Collections.synchronizedList(new ArrayList<>());
-        try (HttpClient client = HttpClient.newHttpClient()) {
-            try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-                var realEstateMatcher = REAL_ESTATE_PATTERN.matcher(html);
+            while (realEstateMatcher.find()) {
+                String parcelId = realEstateMatcher.group(1).trim();
+                String address = realEstateMatcher.group(2).trim();
 
-                while (realEstateMatcher.find()) {
-                    String parcelId = realEstateMatcher.group(1).trim();
-                    String address = realEstateMatcher.group(2).trim();
+                scope.fork(() -> {
+                    HttpRequest request = HttpRequest.newBuilder(URI.create(STR."https://ascendweb.jacksongov.org/ParcelInfo.aspx?parcel_number=\{parcelId}")).build();
+                    var response = client.send(request, HttpResponse.BodyHandlers.ofString());
 
-                    scope.fork(() -> {
-                        HttpRequest request = HttpRequest.newBuilder(URI.create(STR."https://ascendweb.jacksongov.org/ParcelInfo.aspx?parcel_number=\{parcelId}")).build();
-                        var response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-                        if (response.statusCode() == 200) {
-                            var marketValueMatcher = MARKET_VALUE_PATTERN.matcher(response.body());
-                            if (marketValueMatcher.find()) {
-                                rows.add(STR. """
-                                        "\{address}","\{parcelId}","\{marketValueMatcher.group(1)}","\{marketValueMatcher.group(2)}","\{marketValueMatcher.group(3)}","\{marketValueMatcher.group(4)}","\{marketValueMatcher.group(5)}" """.trim());
-                            } else {
-                                System.out.println(STR."Failed match for \{parcelId} (\{address})");
-                            }
+                    if (response.statusCode() == 200) {
+                        var marketValueMatcher = MARKET_VALUE_PATTERN.matcher(response.body());
+                        if (marketValueMatcher.find()) {
+                            rows.add(STR. """
+                                    "\{address}","\{parcelId}","\{marketValueMatcher.group(1)}","\{marketValueMatcher.group(2)}","\{marketValueMatcher.group(3)}","\{marketValueMatcher.group(4)}","\{marketValueMatcher.group(5)}" """.trim());
                         } else {
-                            System.out.println(STR."Failed request (HTTP \{response.statusCode()}) for \{parcelId} (\{address})");
+                            System.out.println(STR."Failed match for \{parcelId} (\{address})");
                         }
-                        return null;
-                    });
-                    Thread.sleep(800);
-                }
-                scope.join();
+                    } else {
+                        System.out.println(STR."Failed request (HTTP \{response.statusCode()}) for \{parcelId} (\{address})");
+                    }
+                    return null;
+                });
+                Thread.sleep(800);
             }
+            scope.join();
         }
-        Files.write(Path.of("./" + filename.split("\\.")[0] + ".csv"), rows);
     }
+    Files.write(Path.of("./" + filename.split("\\.")[0] + ".csv"), rows);
 }
